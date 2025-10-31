@@ -1,7 +1,7 @@
 # 🥞 PancakeSwap V3 LP Monitor (Public Edition)
 
 一个轻量级的 PancakeSwap V3 LP 状态监控脚本，可查询钱包持有的流动性头寸是否在区间内，并支持可选的 Telegram 通知与心跳上报。
-\n需要在此处获取api密钥（免费）： https://thegraph.com/studio/apikeys/
+ - 需要在此处获取api密钥（免费）： https://thegraph.com/studio/apikeys/
 ---
 
 ## 🚀 功能特性
@@ -18,5 +18,6 @@
 
 ```bash
 pip install requests
+
 
 
