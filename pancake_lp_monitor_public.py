@@ -1,17 +1,30 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PancakeSwap V3 LP 监控器 (Public Edition)
+PancakeSwap V3 LP 监控器 (Public Edition) - 使用链上数据
 Author: DXH430
 """
+
+import sys
+import os
+
+# 设置 stdout 编码为 UTF-8，避免 Windows 控制台编码问题
+if sys.platform == 'win32':
+    import codecs
+    sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
+    sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
 
 import requests
 import time
 from datetime import datetime
 
+# 添加 onchain 目录到路径
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'onchain'))
+from pancake_lp_detector import PancakeLPOwnerInspector
+
 # ================== 用户配置 ==================
-GRAPH_URL = "https://gateway.thegraph.com/api/subgraphs/id/A1BC1hzDsK4NTeXBpKQnDBphngpYZAwDUF7dEBfa3jHK"
-API_KEY = ""  # ❌ 默认留空，请在环境变量或手动填写
+CHAIN_ID = 56  # BSC Mainnet (56) 或 BSC Testnet (97)
+RPC_URL = None  # None 表示使用默认 RPC，也可以手动指定: "https://your-rpc-url.com"
 WALLET_ADDRESS = "0xYourWalletAddressHere".lower()
 
 # Telegram（可选）
@@ -31,36 +44,29 @@ last_status = {}
 total_requests = 0
 success_requests = 0
 start_time = time.time()
+inspector = None
 
-# ================== GraphQL 查询 ==================
+# ================== 初始化链上查询器 ==================
+def init_inspector():
+    global inspector
+    try:
+        inspector = PancakeLPOwnerInspector(chain_id=CHAIN_ID, rpc_url=RPC_URL)
+        rpc_used = RPC_URL if RPC_URL else "默认 RPC"
+        print(f"✅ 已连接到链上，使用 RPC: {rpc_used}")
+    except Exception as e:
+        print(f"❌ 初始化链上查询器失败: {e}")
+        sys.exit(1)
+
+# ================== 从链上查询 LP 头寸 ==================
 def fetch_positions(wallet: str):
     global total_requests, success_requests
     total_requests += 1
-
-    query = (
-        '{ positions(where:{account:"' + wallet +
-        '"} first:50 orderBy:id orderDirection:asc subgraphError:allow)'
-        '{id liquidity tickLower{index} tickUpper{index} pool{id tick}} }'
-    )
-
-    headers = {"Content-Type": "application/json"}
-    if API_KEY:
-        headers["Authorization"] = f"Bearer {API_KEY}"
-
     try:
-        res = requests.post(GRAPH_URL, headers=headers, json={"query": query}, timeout=20)
-        if res.status_code == 200:
-            success_requests += 1
-        else:
-            print(f"⚠️ HTTP {res.status_code}: {res.text[:200]}")
-            return []
-        data = res.json()
-        if "errors" in data:
-            print("⚠️ GraphQL 错误:", data["errors"])
-            return []
-        return data.get("data", {}).get("positions", [])
+        positions = inspector.list_positions(owner=wallet, include_empty=False)
+        success_requests += 1
+        return positions
     except Exception as e:
-        print(f"❌ 请求失败: {e}")
+        print(f"❌ 链上查询失败: {e}")
         return []
 
 # ================== Telegram 通知 ==================
@@ -120,15 +126,25 @@ def check_positions():
         return
 
     for pos in positions:
-        pos_id = pos["id"]
-        pool = pos["pool"]
-        tick = int(pool["tick"])
-        low = int(pos["tickLower"]["index"])
-        up = int(pos["tickUpper"]["index"])
+        # 适配新的链上数据结构
+        pos_id = str(pos["token_id"])
+        pool_addr = pos["pool"]
+        tick = int(pos["tick"]["current"])
+        low = int(pos["tick"]["lower"])
+        up = int(pos["tick"]["upper"])
         liq = float(pos["liquidity"])
+
+        # 获取 token 信息
+        token0_symbol = pos["tokens"]["token0"]["symbol"]
+        token1_symbol = pos["tokens"]["token1"]["symbol"]
+        token0_amount = pos["tokens"]["token0"]["amount"]
+        token1_amount = pos["tokens"]["token1"]["amount"]
+
         in_range = low <= tick <= up
         status = "🟢 IN RANGE" if in_range else "🔴 OUT OF RANGE"
-        print(f"{status} | Pool: {pool['id'][:10]}... | Tick={tick} | Range=[{low},{up}] | LQ={liq:.2e}")
+        print(f"{status} | TokenID: {pos_id} | Pool: {pool_addr[:10]}... | {token0_symbol}/{token1_symbol}")
+        print(f"  Tick={tick} | Range=[{low},{up}] | LQ={liq:.2e}")
+        print(f"  {token0_symbol}: {token0_amount} | {token1_symbol}: {token1_amount}")
 
         prev = last_status.get(pos_id)
         if prev is None:
@@ -140,17 +156,27 @@ def check_positions():
             msg = (
                 f"<b>PancakeSwap LP 状态变动</b>\n"
                 f"时间：<code>{now}</code>\n"
-                f"头寸ID：<code>{pos_id}</code>\n"
-                f"池子ID：<code>{pool['id']}</code>\n"
+                f"头寸 TokenID：<code>{pos_id}</code>\n"
+                f"交易对：<code>{token0_symbol}/{token1_symbol}</code>\n"
+                f"池子地址：<code>{pool_addr}</code>\n"
                 f"当前Tick：<code>{tick}</code>\n"
                 f"区间：[{low}, {up}]\n"
+                f"Token0: {token0_amount} {token0_symbol}\n"
+                f"Token1: {token1_amount} {token1_symbol}\n"
                 f"状态：{direction}"
             )
             send_tg(msg)
 
 # ================== 主循环 ==================
 if __name__ == "__main__":
-    print("🚀 PancakeSwap LP 监控器已启动")
+    print("🚀 PancakeSwap LP 监控器已启动（使用链上数据）")
+    print(f"📍 监控钱包: {WALLET_ADDRESS}")
+    print(f"⛓️ 链 ID: {CHAIN_ID}")
+    print(f"⏱️ 检查间隔: {CHECK_INTERVAL} 秒")
+
+    # 初始化链上查询器
+    init_inspector()
+
     while True:
         check_positions()
         if ENABLE_HEARTBEAT:
